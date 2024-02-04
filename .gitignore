@@ -3,6 +3,8 @@
 /a.exe
 /a.jpg
 /a.txt
-/nft_windows_amd64.exe
 /test.cpp
-/cmake-build-debug/
+/main_old.cpp
+/cmake-build-debug
+/cmake-build-release
+/cmake-build-release-mingw
