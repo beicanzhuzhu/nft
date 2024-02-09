@@ -143,7 +143,7 @@ int main(int argc, char **argv)
             char recv_buf[DEFAULT_BUFLEN];
 
             ZeroMemory(send_buf, DEFAULT_BUFLEN);
-            ZeroMemory(recv_buf, DEFAULT_BUFLEN);
+
 
             std::string file_data;
             unsigned long long int file_len;
