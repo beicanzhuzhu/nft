@@ -39,7 +39,7 @@ inline string get_name(const string & path)
     return n;
 }
 
-inline size_t stos(const string& s)
+inline size_t ston(const string& s)
 {
     size_t r;
     stringstream i(s);
@@ -247,11 +247,8 @@ bool send_single_file(SOCKET ConnectSocket,  fstream & file)
         file.seekg(have_reade_length, std::ios::beg);
         ZeroMemory(send_buf, DEFAULT_BUFLEN);
     }
-    std::cout << "finish\n" << have_reade_length << " bytes have been sent.";
+    std::cout << "finish\n" << have_reade_length << " bytes have been sent.\n";
 
-    // cleanup
-    closesocket(ConnectSocket);
-    WSACleanup();
     return true;
 }
 
@@ -274,27 +271,27 @@ bool recv_single_file(SOCKET ClientSocket, const string & path, const string & n
     do
     {
         iResult = recv(ClientSocket, recv_buf, DEFAULT_BUFLEN, 0);
-        if (iResult > 0)
-        {
-            file.write(recv_buf, iResult);
-            have_recv_length += iResult;
-            file.seekp(have_recv_length, std::ios::beg);
-            ZeroMemory(recv_buf, DEFAULT_BUFLEN);
-        }
-        else if (iResult == 0)
+        have_recv_length += iResult;
+        if (iResult == 0 || have_recv_length >= file_len)
         {
             cout << "finish\n" << have_recv_length << " bytes have been received.\n";
             file.close();
-        }
-        else
+            break;
+        }else if (iResult > 0)
+        {
+            file.write(recv_buf, iResult);
+            file.seekp(have_recv_length, std::ios::beg);
+            ZeroMemory(recv_buf, DEFAULT_BUFLEN);
+        }else
         {
             cout<< "\033[31m" << "Accidental disconnection." << "\033[0m";
-            system(("rm" + path).c_str());
+            system(("rm " + path).c_str());
             file.close();
 
             return false;
         }
-    } while (iResult > 0);
+        cout << "1";
+    } while (true);
 
     return true;
 }
@@ -364,10 +361,9 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
                 success += 1;
             }
         }
-
-        cout << "Transmission complete, " << success <<" success, " << filed << " filed.";
     }
     // 结束传输
+    cout << "Transmission complete, " << success <<" success, " << filed << " filed.";
     iResult = send(ConnectSocket, "done", 4, 0);
     if (iResult == SOCKET_ERROR)
     {
@@ -430,7 +426,7 @@ void recv_files(const string & path)
         file_data = recv_buf;
         size_t len = file_data.find('&');
         string name = file_data.substr(1, len-1);
-        size_t file_len = stos(file_data.substr(len + 1, file_data.length()));
+        size_t file_len = ston(file_data.substr(len + 1, file_data.length()));
         // 接收文件
         if (file_data[0] == 'f')
         {
@@ -454,9 +450,8 @@ void recv_files(const string & path)
                     //完成
                     if (recv_single_file(ClientSocket, path, name, file_len))
                     {
-                        cout << "finish, done\n";
+                        break;
                     }
-                    break;
                 } else if (answer[0] == 'n')
                 {
                     send(ClientSocket, "no", 2, 0);
@@ -480,5 +475,6 @@ void recv_files(const string & path)
                       << "\033[0m";
         }
     }
+    cout << "finish, done\n";
 
 }
