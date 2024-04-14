@@ -16,7 +16,8 @@
 #include <fstream>
 #include <string>
 #include <cstdlib>
-#include <sstream>
+#include <format>
+#include <chrono>
 
 #include "clipp.h"
 
@@ -30,6 +31,16 @@ void init_client(SOCKET *ConnectSocket, const char *ipAddr);
 void init_recv(SOCKET *ClientSocket);
 
 bool is_folder(const string &path);
+
+string set_progress_bar(size_t have_done, size_t total);
+
+bool send_single_file(SOCKET ConnectSocket, fstream & file);
+
+bool recv_single_file(SOCKET ClientSocket, const string & path, const string & name, size_t file_len);
+
+void send_files(const string & ip, const std::vector<string> & paths);
+
+void recv_files(const string & path);
 
 inline string get_name(const string & path)
 {
@@ -54,13 +65,6 @@ inline string ntos(size_t t)
     return ss.str();
 }
 
-bool send_single_file(SOCKET ConnectSocket, fstream & file);
-
-bool recv_single_file(SOCKET ClientSocket, const string & path, const string & name, size_t file_len);
-
-void send_files(const string & ip, const std::vector<string> & paths);
-
-void recv_files(const string & path);
 
 char recv_buf[DEFAULT_BUFLEN];
 char send_buf[DEFAULT_BUFLEN];
@@ -80,7 +84,7 @@ int main(int argc, char **argv)
     string path;
     std::vector<std::string> paths;
 
-    //发送 : nft send path ip_address
+    //发送 : nft send ip_address path
     auto send_mode = (
             command("send").set(select, mode::send).doc("Send files to another computer running nft."),
             value("ip address", ip),
@@ -105,7 +109,7 @@ int main(int argc, char **argv)
                 send_files(ip, paths);
                 break;
             case mode::recv:
-                path = (path == "" ? "." : path);
+                path = (path.empty() ? "." : path);
                 recv_files(path);
                 break;
             case mode::help:
@@ -246,8 +250,9 @@ bool send_single_file(SOCKET ConnectSocket,  fstream & file)
         have_reade_length += send_len;
         file.seekg(have_reade_length, std::ios::beg);
         ZeroMemory(send_buf, DEFAULT_BUFLEN);
+
     }
-    std::cout << "finish\n" << have_reade_length << " bytes have been sent.\n";
+//    std::cout << "finish\n" << have_reade_length << " bytes have been sent.\n";
 
     return true;
 }
@@ -267,20 +272,15 @@ bool recv_single_file(SOCKET ClientSocket, const string & path, const string & n
         return false;
     }
     // Receive until the peer shuts down the connection
-    long long have_recv_length = 0;
+    long long have_recv_len = 0;
     do
     {
         iResult = recv(ClientSocket, recv_buf, DEFAULT_BUFLEN, 0);
-        have_recv_length += iResult;
-        if (iResult == 0 || have_recv_length >= file_len)
-        {
-            cout << "finish\n" << have_recv_length << " bytes have been received.\n";
-            file.close();
-            break;
-        }else if (iResult > 0)
+        have_recv_len += iResult;
+        if (iResult > 0)
         {
             file.write(recv_buf, iResult);
-            file.seekp(have_recv_length, std::ios::beg);
+            file.seekp(have_recv_len, std::ios::beg);
             ZeroMemory(recv_buf, DEFAULT_BUFLEN);
         }else
         {
@@ -290,9 +290,24 @@ bool recv_single_file(SOCKET ClientSocket, const string & path, const string & n
 
             return false;
         }
-        cout << "1";
-    } while (true);
+        if (have_recv_len == file_len)
+        {
+            cout << "finish\n" << have_recv_len << " bytes have been received.\n";
+            file.close();
+            break;
+        }
 
+        /* TODO:生成进度条
+        string p_b =set_progress_bar(have_recv_len, file_len);
+        if(!p_b.empty())
+        {
+            // 生成进度条 a.file[====>               ]20% 100MB/500MB 10MB/s 00:40
+            cout << p_b;
+        }
+         */
+
+    } while (true);
+    cout<<endl;
     return true;
 }
 
@@ -419,6 +434,10 @@ void recv_files(const string & path)
             std::cout << "\033[31m" << "linkage interrupt with error: " << WSAGetLastError() << "\033[0m\n";
             break;
         }
+        if (strcmp(recv_buf, "done") == 0)
+        {
+            break;
+        }
 
         // 解析文件信息
         // 内容     f/d          filename&filesize"
@@ -478,3 +497,22 @@ void recv_files(const string & path)
     cout << "finish, done\n";
 
 }
+
+string set_progress_bar(size_t have_done, size_t total)
+{
+    string result;
+    using namespace std::chrono_literals;
+    static auto time = std::chrono::high_resolution_clock::now();
+    static const auto interval =  1s;
+
+    if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::high_resolution_clock::now()-time) < interval || )
+    {
+        return result;
+    }
+
+    return result;
+
+}
+
+
+
