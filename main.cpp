@@ -505,7 +505,7 @@ string set_progress_bar(size_t have_done, size_t total)
     static auto time = std::chrono::high_resolution_clock::now();
     static const auto interval =  1s;
 
-    if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::high_resolution_clock::now()-time) < interval || )
+    if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::high_resolution_clock::now()-time) < interval )
     {
         return result;
     }
