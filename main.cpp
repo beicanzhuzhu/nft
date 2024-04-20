@@ -10,6 +10,8 @@
 #define NOMINMAX   // 解决minwindef.h中max,min冲突
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 
+#include "clipp.h"
+
 #include <windows.h>
 #include <winsock2.h>
 #include <iostream>
@@ -17,14 +19,14 @@
 #include <string>
 #include <cstdlib>
 #include <format>
-#include <chrono>
-
-#include "clipp.h"
+//#include <thread>
+#include <atomic>
 
 #define DEFAULT_PORT 8233
 #define DEFAULT_BUFLEN 512
 
-using std::string, std::cout, std::endl, std::stringstream, std::fstream;
+using std::string, std::cout, std::endl, std::stringstream, std::fstream, std::atomic_size_t;
+
 
 void init_client(SOCKET *ConnectSocket, const char *ipAddr);
 
@@ -32,11 +34,11 @@ void init_recv(SOCKET *ClientSocket);
 
 bool is_folder(const string &path);
 
-string set_progress_bar(size_t have_done, size_t total);
+string show_progress_bar();
 
 bool send_single_file(SOCKET ConnectSocket, fstream & file);
 
-bool recv_single_file(SOCKET ClientSocket, const string & path, const string & name, size_t file_len);
+bool recv_single_file(SOCKET ClientSocket, const string & path, const string & name);
 
 void send_files(const string & ip, const std::vector<string> & paths);
 
@@ -68,6 +70,8 @@ inline string ntos(size_t t)
 
 char recv_buf[DEFAULT_BUFLEN];
 char send_buf[DEFAULT_BUFLEN];
+
+atomic_size_t have_recv_len, have_send_len, file_len;
 
 
 int main(int argc, char **argv)
@@ -228,18 +232,15 @@ bool is_folder(const string &path)
 bool send_single_file(SOCKET ConnectSocket,  fstream & file)
 {
     int iResult;
-    size_t file_len;
     file.seekg(0, std::ios::end);
     file_len = file.tellg();
     file.seekg(0, std::ios::beg);
+
     // 发送文件
-    long long have_reade_length = 0;
-    while (have_reade_length < file_len)
+    while (!file.eof())
     {
-        int send_len = (have_reade_length + DEFAULT_BUFLEN) < file_len ? DEFAULT_BUFLEN : (int) (file_len -
-                have_reade_length);
-        file.read(send_buf, send_len);
-        iResult = send(ConnectSocket, send_buf, send_len, 0);
+        file.read(send_buf, DEFAULT_BUFLEN);
+        iResult = send(ConnectSocket, send_buf, (int)file.gcount(), 0);
         if (iResult == SOCKET_ERROR)
         {
             printf("send failed with error: %d\n", WSAGetLastError());
@@ -247,12 +248,16 @@ bool send_single_file(SOCKET ConnectSocket,  fstream & file)
             WSACleanup();
             return false;
         }
-        have_reade_length += send_len;
-        file.seekg(have_reade_length, std::ios::beg);
+        have_send_len += file.gcount();
         ZeroMemory(send_buf, DEFAULT_BUFLEN);
 
     }
-//    std::cout << "finish\n" << have_reade_length << " bytes have been sent.\n";
+    if(file.eof())
+    {
+        cout<<"\n\nbad\n\n"<<file.gcount()<<endl;
+    }
+    file.close();
+    std::cout << "finish\n" << have_send_len << " bytes have been sent.\n";
 
     return true;
 }
@@ -260,7 +265,7 @@ bool send_single_file(SOCKET ConnectSocket,  fstream & file)
 /*
  * 接收单个文件
  */
-bool recv_single_file(SOCKET ClientSocket, const string & path, const string & name, size_t file_len)
+bool recv_single_file(SOCKET ClientSocket, const string & path, const string & name)
 {
     int iResult;
 
@@ -272,7 +277,6 @@ bool recv_single_file(SOCKET ClientSocket, const string & path, const string & n
         return false;
     }
     // Receive until the peer shuts down the connection
-    long long have_recv_len = 0;
     do
     {
         iResult = recv(ClientSocket, recv_buf, DEFAULT_BUFLEN, 0);
@@ -280,7 +284,6 @@ bool recv_single_file(SOCKET ClientSocket, const string & path, const string & n
         if (iResult > 0)
         {
             file.write(recv_buf, iResult);
-            file.seekp(have_recv_len, std::ios::beg);
             ZeroMemory(recv_buf, DEFAULT_BUFLEN);
         }else
         {
@@ -324,7 +327,6 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
     int success = 0, filed = 0;
     std::string file_data;
     string file_name;
-    size_t file_len;
 
     for (const auto& path:paths)
     {
@@ -445,7 +447,7 @@ void recv_files(const string & path)
         file_data = recv_buf;
         size_t len = file_data.find('&');
         string name = file_data.substr(1, len-1);
-        size_t file_len = ston(file_data.substr(len + 1, file_data.length()));
+        file_len = ston(file_data.substr(len + 1, file_data.length()));
         // 接收文件
         if (file_data[0] == 'f')
         {
@@ -467,7 +469,7 @@ void recv_files(const string & path)
                         break;
                     }
                     //完成
-                    if (recv_single_file(ClientSocket, path, name, file_len))
+                    if (recv_single_file(ClientSocket, path, name))
                     {
                         break;
                     }
@@ -497,22 +499,8 @@ void recv_files(const string & path)
     cout << "finish, done\n";
 
 }
-
-string set_progress_bar(size_t have_done, size_t total)
+/*
+string show_progress_bar()
 {
-    string result;
-    using namespace std::chrono_literals;
-    static auto time = std::chrono::high_resolution_clock::now();
-    static const auto interval =  1s;
 
-    if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::high_resolution_clock::now()-time) < interval)
-    {
-        return result;
-    }
-
-    return result;
-
-}
-
-
-
+}*/
