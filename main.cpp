@@ -19,13 +19,14 @@
 #include <string>
 #include <cstdlib>
 #include <format>
-//#include <thread>
+#include <thread>
 #include <atomic>
+#include <ctime>
 
 #define DEFAULT_PORT 8233
-#define DEFAULT_BUFLEN 512
+#define DEFAULT_BUFLEN 1024
 
-using std::string, std::cout, std::endl, std::stringstream, std::fstream, std::atomic_size_t;
+using std::string, std::cout, std::endl, std::stringstream, std::fstream, std::atomic_size_t, std::thread;
 
 
 void init_client(SOCKET *ConnectSocket, const char *ipAddr);
@@ -34,15 +35,17 @@ void init_recv(SOCKET *ClientSocket);
 
 bool is_folder(const string &path);
 
-string show_progress_bar();
+void show_progress();
 
 bool send_single_file(SOCKET ConnectSocket, fstream & file);
 
-bool recv_single_file(SOCKET ClientSocket, const string & path, const string & name);
+bool recv_single_file(SOCKET ClientSocket,  fstream & file);
 
 void send_files(const string & ip, const std::vector<string> & paths);
 
 void recv_files(const string & path);
+
+string convert_unit(size_t size);
 
 inline string get_name(const string & path)
 {
@@ -52,6 +55,7 @@ inline string get_name(const string & path)
     return n;
 }
 
+// 字符串转数字
 inline size_t ston(const string& s)
 {
     size_t r;
@@ -60,6 +64,7 @@ inline size_t ston(const string& s)
     return r;
 }
 
+// 数字转字符串
 inline string ntos(size_t t)
 {
     stringstream ss;
@@ -71,7 +76,8 @@ inline string ntos(size_t t)
 char recv_buf[DEFAULT_BUFLEN];
 char send_buf[DEFAULT_BUFLEN];
 
-atomic_size_t have_recv_len, have_send_len, file_len;
+atomic_size_t have_done_len, file_len;
+string name;
 
 
 int main(int argc, char **argv)
@@ -232,9 +238,10 @@ bool is_folder(const string &path)
 bool send_single_file(SOCKET ConnectSocket,  fstream & file)
 {
     int iResult;
-    file.seekg(0, std::ios::end);
-    file_len = file.tellg();
+
     file.seekg(0, std::ios::beg);
+
+    thread progress_bar {show_progress};
 
     // 发送文件
     while (!file.eof())
@@ -248,16 +255,13 @@ bool send_single_file(SOCKET ConnectSocket,  fstream & file)
             WSACleanup();
             return false;
         }
-        have_send_len += file.gcount();
+        have_done_len += file.gcount();
         ZeroMemory(send_buf, DEFAULT_BUFLEN);
 
     }
-    if(file.eof())
-    {
-        cout<<"\n\nbad\n\n"<<file.gcount()<<endl;
-    }
     file.close();
-    std::cout << "finish\n" << have_send_len << " bytes have been sent.\n";
+    progress_bar.join();
+    std::cout << "finish\n" << have_done_len << " bytes have been sent.\n";
 
     return true;
 }
@@ -265,52 +269,43 @@ bool send_single_file(SOCKET ConnectSocket,  fstream & file)
 /*
  * 接收单个文件
  */
-bool recv_single_file(SOCKET ClientSocket, const string & path, const string & name)
+bool recv_single_file(SOCKET ClientSocket, fstream & file)
 {
     int iResult;
 
-    std::fstream file;
-    file.open(path+"\\"+name, std::ios::out | std::ios::binary);
+    file.seekg(0, std::ios::beg);
+
     if (!file.is_open())
     {
         std::cout << "文件打开失败\n";
         return false;
     }
+    // 显示进度条
+    thread progress_bar {show_progress};
     // Receive until the peer shuts down the connection
     do
     {
         iResult = recv(ClientSocket, recv_buf, DEFAULT_BUFLEN, 0);
-        have_recv_len += iResult;
-        if (iResult > 0)
+        have_done_len += iResult;
+        if (iResult >= 0)
         {
             file.write(recv_buf, iResult);
             ZeroMemory(recv_buf, DEFAULT_BUFLEN);
         }else
         {
             cout<< "\033[31m" << "Accidental disconnection." << "\033[0m";
-            system(("rm " + path).c_str());
             file.close();
 
             return false;
         }
-        if (have_recv_len == file_len)
+        if (have_done_len == file_len)
         {
-            cout << "finish\n" << have_recv_len << " bytes have been received.\n";
             file.close();
             break;
         }
 
-        /* TODO:生成进度条
-        string p_b =set_progress_bar(have_recv_len, file_len);
-        if(!p_b.empty())
-        {
-            // 生成进度条 a.file[====>               ]20% 100MB/500MB 10MB/s 00:40
-            cout << p_b;
-        }
-         */
-
     } while (true);
-    cout<<endl;
+    progress_bar.join();
     return true;
 }
 
@@ -326,14 +321,13 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
 
     int success = 0, filed = 0;
     std::string file_data;
-    string file_name;
 
     for (const auto& path:paths)
     {
         if (!is_folder(path))
         {
             // 要发送的文件
-            file_name = get_name(path);
+            name = get_name(path);
             std::fstream file;
             file.open(path, std::ios::in | std::ios::binary);
             if (!file.is_open())
@@ -343,7 +337,7 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
             }
             file.seekg(0, std::ios::end);
             file_len = file.tellg();
-            file_data = "f" + file_name + "&" + ntos(file_len);
+            file_data = "f" + name + "&" + ntos(file_len);
             // 发送文件消息
             iResult = send(ConnectSocket, file_data.c_str(), (int)file_data.length(), 0);
             if (iResult == SOCKET_ERROR)
@@ -371,7 +365,7 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
             // 发送文件
             if (!send_single_file(ConnectSocket, file))
             {
-                cout << "\033[31m" << "send " << file_name << " filed" << "\033[0m\n";
+                cout << "\033[31m" << "send " << name << " filed" << "\033[0m\n";
                 filed += 1;
             }else
             {
@@ -389,6 +383,8 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
         WSACleanup();
         exit(1);
     }
+    // 等待结束
+    iResult = recv(ConnectSocket, recv_buf, DEFAULT_BUFLEN, 0);
 }
 
 /*
@@ -401,7 +397,7 @@ void recv_files(const string & path)
     int iResult;
     // 接收缓存
 
-    std::string file_data;
+    string file_data;
     init_recv(&ListenSocket);
     iResult = listen(ListenSocket, SOMAXCONN);
     if (iResult == SOCKET_ERROR)
@@ -433,7 +429,7 @@ void recv_files(const string & path)
         iResult = recv(ClientSocket, recv_buf, DEFAULT_BUFLEN, 0);
         if (iResult <= 0)
         {
-            std::cout << "\033[31m" << "linkage interrupt with error: " << WSAGetLastError() << "\033[0m\n";
+            cout << "\033[31m" << "linkage interrupt with error: " << WSAGetLastError() << "\033[0m\n";
             break;
         }
         if (strcmp(recv_buf, "done") == 0)
@@ -446,7 +442,7 @@ void recv_files(const string & path)
         //     f:文件 d:文件夹       文件(夹)名&文件总大小
         file_data = recv_buf;
         size_t len = file_data.find('&');
-        string name = file_data.substr(1, len-1);
+        name = file_data.substr(1, len-1);
         file_len = ston(file_data.substr(len + 1, file_data.length()));
         // 接收文件
         if (file_data[0] == 'f')
@@ -454,6 +450,7 @@ void recv_files(const string & path)
             std::cout << "Do you want to accept the file " << name << " Size : " << file_len << " bytes ?(y/n):";
             while (true)
             {
+                // 验证回答
                 std::string answer;
                 std::cin >> answer;
                 if (answer[0] == 'y')
@@ -468,11 +465,7 @@ void recv_files(const string & path)
                         WSACleanup();
                         break;
                     }
-                    //完成
-                    if (recv_single_file(ClientSocket, path, name))
-                    {
-                        break;
-                    }
+                    break;
                 } else if (answer[0] == 'n')
                 {
                     send(ClientSocket, "no", 2, 0);
@@ -483,10 +476,21 @@ void recv_files(const string & path)
                 {
                     std::cout << "Input yes(y) or no(n)\n";
                 }
-
             }
-
-          // 接收文件夹
+            fstream file;
+            file.open(path+"\\"+name, std::ios::out | std::ios::binary);
+            if (!file.is_open())
+            {
+                std::cout << "文件打开失败\n";
+                break;
+            }
+            //完成
+            if (!recv_single_file(ClientSocket,file))
+            {
+                cout<<"error"<<endl;
+                break;
+            }
+          // TODO:接收文件夹
         } else if (file_data[0] == 'd')
         {
 
@@ -499,8 +503,71 @@ void recv_files(const string & path)
     cout << "finish, done\n";
 
 }
-/*
-string show_progress_bar()
-{
 
-}*/
+//生成进度条
+//生成进度条 a.file
+//         [====>               ]20% 100MB/500MB 10MB/s 00:40
+void show_progress()
+{
+    Sleep(100);
+    string  progress;
+    clock_t time_now ,time_last = 0;
+    double  speed, percentage;
+    size_t  estimated_sec, last_have_done_len = 0;
+    string  have_done_size_t, file_len_t;
+    string progress_bar;
+
+    cout<<name<<endl;
+    while(true)
+    {
+        time_now            = clock();
+        speed               = (double)(have_done_len-last_have_done_len)/((double)(time_now-time_last)/CLOCKS_PER_SEC);  //单位是字节\秒
+        if(speed == 0)
+        {
+            speed = 10000; // 莫名奇妙的错bug，有概率speed会是0
+        }
+        last_have_done_len  = have_done_len;
+        time_last           = time_now;
+        percentage          = ((double)have_done_len/(double)file_len)*100;
+        estimated_sec       = (file_len-have_done_len)/(size_t)speed;
+        have_done_size_t    = convert_unit(have_done_len.load());      // 转换单位
+        file_len_t          = convert_unit(file_len.load());           // 转换单位
+
+        progress_bar.clear();
+        for(int i=0; i<(int)percentage/5;i++)
+        {
+            progress_bar.append("=");
+        }
+        progress_bar.append(">");
+        progress = std::format("[{: <21}]{:.2f}% {}/{} {}/s est:{}s",
+                               progress_bar,
+                               percentage,
+                               have_done_size_t,
+                               file_len_t,
+                               convert_unit((long long)speed),
+                               estimated_sec);
+
+        cout<<"\033[K\r"<<progress;
+        if(have_done_len == file_len)
+        {
+            cout << endl;
+            break;
+        }
+        Sleep(100);
+    }
+
+}
+
+string convert_unit(size_t size)
+{
+    std::string result;
+    const std::string units[5] = {"B" ,"KB", "MB", "GB", "PB"};
+    int i;
+	for (i=1; ((double)size/(double)pow(1024,i))>1.0 ;++i)
+        ;
+    double a =(double)size/pow(1024,i-1);
+	result = std::format("{:.2f}{}",a, units[i-1]);
+
+
+    return result;
+}
