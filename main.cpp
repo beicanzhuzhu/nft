@@ -78,6 +78,7 @@ char send_buf[DEFAULT_BUFLEN];
 
 atomic_size_t have_done_len, file_len;
 string name;
+std::atomic_bool exit_f = false;
 
 
 int main(int argc, char **argv)
@@ -241,6 +242,7 @@ bool send_single_file(SOCKET ConnectSocket,  fstream & file)
 
     file.seekg(0, std::ios::beg);
 
+    have_done_len = 0;
     thread progress_bar {show_progress};
 
     // 发送文件
@@ -261,7 +263,6 @@ bool send_single_file(SOCKET ConnectSocket,  fstream & file)
     }
     file.close();
     progress_bar.join();
-    std::cout << "finish\n" << have_done_len << " bytes have been sent.\n";
 
     return true;
 }
@@ -281,6 +282,8 @@ bool recv_single_file(SOCKET ClientSocket, fstream & file)
         return false;
     }
     // 显示进度条
+    have_done_len = 0;
+
     thread progress_bar {show_progress};
     // Receive until the peer shuts down the connection
     do
@@ -293,9 +296,11 @@ bool recv_single_file(SOCKET ClientSocket, fstream & file)
             ZeroMemory(recv_buf, DEFAULT_BUFLEN);
         }else
         {
-            cout<< "\033[31m" << "Accidental disconnection." << "\033[0m";
+            cout<< "\033[31m" << "\nAccidental disconnection." << "\033[0m";
             file.close();
-
+            exit_f = true;
+            progress_bar.join();
+            exit_f = false;
             return false;
         }
         if (have_done_len == file_len)
@@ -319,7 +324,7 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
 
     init_client(&ConnectSocket, ip.c_str());
 
-    int success = 0, filed = 0;
+    int success = 0, failed = 0;
     std::string file_data;
 
     for (const auto& path:paths)
@@ -353,10 +358,7 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
             {
                 cout << "\033[31m" << "linkage interrupt with error: %d\n" << WSAGetLastError() << "\033[0m";
             }
-            if (strcmp(recv_buf, "yes") == 0)
-            {
-                cout << "begin send" << std::endl;
-            } else if (strcmp(recv_buf, "no") == 0)
+            if (strcmp(recv_buf, "no") == 0)
             {
                 std::cout << "the " << ip << "reject the documents." << std::endl;
                 break;
@@ -366,7 +368,7 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
             if (!send_single_file(ConnectSocket, file))
             {
                 cout << "\033[31m" << "send " << name << " filed" << "\033[0m\n";
-                filed += 1;
+                failed += 1;
             }else
             {
                 success += 1;
@@ -374,7 +376,7 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
         }
     }
     // 结束传输
-    cout << "Transmission complete, " << success <<" success, " << filed << " filed.";
+    cout << "Transmission complete, " << success <<" success, " << failed << " filed.";
     iResult = send(ConnectSocket, "done", 4, 0);
     if (iResult == SOCKET_ERROR)
     {
@@ -395,7 +397,8 @@ void recv_files(const string & path)
     auto ListenSocket = INVALID_SOCKET;
     auto ClientSocket = INVALID_SOCKET;
     int iResult;
-    // 接收缓存
+
+    int success = 0, failed = 0;
 
     string file_data;
     init_recv(&ListenSocket);
@@ -447,10 +450,10 @@ void recv_files(const string & path)
         // 接收文件
         if (file_data[0] == 'f')
         {
+            // 验证回答
             std::cout << "Do you want to accept the file " << name << " Size : " << file_len << " bytes ?(y/n):";
             while (true)
             {
-                // 验证回答
                 std::string answer;
                 std::cin >> answer;
                 if (answer[0] == 'y')
@@ -477,6 +480,8 @@ void recv_files(const string & path)
                     std::cout << "Input yes(y) or no(n)\n";
                 }
             }
+
+            // 接收文件
             fstream file;
             file.open(path+"\\"+name, std::ios::out | std::ios::binary);
             if (!file.is_open())
@@ -488,7 +493,10 @@ void recv_files(const string & path)
             if (!recv_single_file(ClientSocket,file))
             {
                 cout<<"error"<<endl;
+                failed += 1;
                 break;
+            }else{
+                success += 1;
             }
           // TODO:接收文件夹
         } else if (file_data[0] == 'd')
@@ -500,7 +508,7 @@ void recv_files(const string & path)
                       << "\033[0m";
         }
     }
-    cout << "finish, done\n";
+    cout << "Transmission complete, " << success <<" success, " << failed << " filed.";
 
 }
 
@@ -548,14 +556,13 @@ void show_progress()
                                estimated_sec);
 
         cout<<"\033[K\r"<<progress;
-        if(have_done_len == file_len)
+        if(have_done_len == file_len || exit_f)
         {
             cout << endl;
             break;
         }
         Sleep(100);
     }
-
 }
 
 string convert_unit(size_t size)
@@ -563,7 +570,7 @@ string convert_unit(size_t size)
     std::string result;
     const std::string units[5] = {"B" ,"KB", "MB", "GB", "PB"};
     int i;
-	for (i=1; ((double)size/(double)pow(1024,i))>1.0 ;++i)
+	for (i=1; ((double)size/pow(1024,i))>1.0 ;++i)
         ;
     double a =(double)size/pow(1024,i-1);
 	result = std::format("{:.2f}{}",a, units[i-1]);
