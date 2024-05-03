@@ -22,6 +22,7 @@
 #include <thread>
 #include <atomic>
 #include <ctime>
+#include <cmath>
 
 #define DEFAULT_PORT 8233
 #define DEFAULT_BUFLEN 1024
