@@ -23,20 +23,38 @@
 #include <atomic>
 #include <ctime>
 #include <cmath>
+#include <vector>
+#include <filesystem>
+#include <exception>
 
 #define DEFAULT_PORT 8233
 #define DEFAULT_BUFLEN 1024
 
-using std::string, std::cout, std::endl, std::stringstream, std::fstream, std::atomic_size_t, std::thread;
+using std::cout, std::cin, std::cerr, std::endl,
+      std::thread, std::vector, std::string,
+      std::atomic_size_t, std::stringstream, std::fstream ;
 
+namespace fs = std::filesystem;
+
+struct file_info{
+    string name;
+    size_t len=0;
+    bool   is_folder=false;
+    bool operator == (const file_info &f)const
+    {
+        return name==f.name;
+    }
+};
 
 void init_client(SOCKET *ConnectSocket, const char *ipAddr);
 
 void init_recv(SOCKET *ClientSocket);
 
-bool is_folder(const string &path);
+
 
 void show_progress();
+
+void confirmation_acceptance(vector<file_info> & files);
 
 bool send_single_file(SOCKET ConnectSocket, fstream & file);
 
@@ -44,16 +62,23 @@ bool recv_single_file(SOCKET ClientSocket,  fstream & file);
 
 void send_files(const string & ip, const std::vector<string> & paths);
 
-void recv_files(const string & path);
+void recv_files(const fs::path & path);
+
+vector<file_info> split_data(const char * data, int len);
 
 string convert_unit(size_t size);
 
-inline string get_name(const string & path)
+inline size_t folder_size(const fs::path& p)
 {
-    stringstream s(path);
-    string n;
-    while (std::getline(s, n, '/'));
-    return n;
+    std::filesystem::directory_entry d{p};
+    size_t size = 0;
+    for (const fs::directory_entry& dir_entry :
+            fs::recursive_directory_iterator(p))
+    {
+        size+=dir_entry.file_size();
+    }
+
+    return size;
 }
 
 // 字符串转数字
@@ -63,14 +88,6 @@ inline size_t ston(const string& s)
     stringstream i(s);
     i>>r;
     return r;
-}
-
-// 数字转字符串
-inline string ntos(size_t t)
-{
-    stringstream ss;
-    ss << t;
-    return ss.str();
 }
 
 
@@ -94,7 +111,7 @@ int main(int argc, char **argv)
     mode select = mode::help;
     std::string ip;
     string path;
-    std::vector<std::string> paths;
+    std::vector<string> paths;
 
     //发送 : nft send ip_address path
     auto send_mode = (
@@ -118,6 +135,9 @@ int main(int argc, char **argv)
         {
             case mode::send:
                 paths = (paths.empty() ? std::vector<string>(1,".") : paths);
+                //转换为绝对路径
+                std::for_each(paths.begin(), paths.end() ,
+                              [](auto& dir_entry){dir_entry=fs::absolute(dir_entry).string();});
                 send_files(ip, paths);
                 break;
             case mode::recv:
@@ -128,7 +148,7 @@ int main(int argc, char **argv)
                 std::cout << make_man_page(send_mode | recv_mode | help_mode);
                 break;
         }
-    }else std::cout << "\033[31mPlease enter valid arguments\033[0m\n"
+    }else cerr << "Please enter valid arguments\n"
         << "Here are some possible arguments:\n"
         << usage_lines(send_mode|recv_mode|help_mode, "nft") << '\n';
 
@@ -210,27 +230,6 @@ void init_recv(SOCKET *ClientSocket)
         closesocket(*ClientSocket);
         WSACleanup();
         exit(1);
-    }
-}
-
-/*
- * 判断路径是否是文件夹
- */
-bool is_folder(const string &path)
-{
-    WIN32_FIND_DATA FindFileData;
-    HANDLE hFind;
-    hFind = FindFirstFileA(path.c_str(), (LPWIN32_FIND_DATAA) &FindFileData);
-    if (hFind == INVALID_HANDLE_VALUE)
-        exit(1);
-    if (FindFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-    {
-        FindClose(hFind);
-        return true;
-    } else
-    {
-        FindClose(hFind);
-        return false;
     }
 }
 
@@ -328,72 +327,70 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
     int success = 0, failed = 0;
     std::string file_data;
 
-    for (const auto& path:paths)
-    {
-        if (!is_folder(path))
-        {
-            // 要发送的文件
-            name = get_name(path);
-            std::fstream file;
-            file.open(path, std::ios::in | std::ios::binary);
-            if (!file.is_open())
-            {
-                cout << "\033[31m" << "open file filed." << "\033[0m";
-                exit(1);
-            }
-            file.seekg(0, std::ios::end);
-            file_len = file.tellg();
-            file_data = "f" + name + "&" + ntos(file_len);
-            // 发送文件消息
-            iResult = send(ConnectSocket, file_data.c_str(), (int)file_data.length(), 0);
-            if (iResult == SOCKET_ERROR)
-            {
-                cout << "\033[31m" << "send filed with error: %d\n" << WSAGetLastError() << "\033[0m";
-                closesocket(ConnectSocket);
-                WSACleanup();
-                exit(1);
-            }
-            // 接受反馈
-            iResult = recv(ConnectSocket, recv_buf, DEFAULT_BUFLEN, 0);
-            if (iResult <= 0)
-            {
-                cout << "\033[31m" << "linkage interrupt with error: %d\n" << WSAGetLastError() << "\033[0m";
-            }
-            if (strcmp(recv_buf, "no") == 0)
-            {
-                std::cout << "the " << ip << "reject the documents." << std::endl;
-                break;
-            }
+    string data;
 
-            // 发送文件
-            if (!send_single_file(ConnectSocket, file))
-            {
-                cout << "\033[31m" << "send " << name << " filed" << "\033[0m\n";
-                failed += 1;
-            }else
-            {
-                success += 1;
-            }
-        }
+    for(const auto &path:paths)
+    {
+        fs::path p(path);
+        data += std::format("{}\x01f{}{}\x01c",p.filename().string(),
+                         fs::is_directory(p) ? folder_size(p) : fs::file_size(p),
+                            (int)fs::is_directory(p));
     }
-    // 结束传输
+
+
+    cout<<data<<endl;
+    // 发送文件信息
+    iResult = send(ConnectSocket, data.c_str(), (int)data.length(), 0);
+    if (iResult == SOCKET_ERROR)
+    {
+        cerr << "send filed with error: " << WSAGetLastError() << endl;
+        closesocket(ConnectSocket);
+        WSACleanup();
+        exit(1);
+    }
+
+     // 接受反馈
+    iResult = recv(ConnectSocket, recv_buf, DEFAULT_BUFLEN, 0);
+    if (iResult < 0)
+    {
+        cerr << "linkage interrupt with error: " << WSAGetLastError() << endl;
+    }
+
+    vector<file_info> files;
+    files = split_data(recv_buf,iResult);
+
+    if(files.empty())
+    {
+        cout<<"all of the files are rejected.\n";
+        failed=(int)paths.size();
+    }
+
+    cout<<"be ready to send: ";
+    std::for_each(files.begin(), files.end(), [](const auto&f){cout<<f.name<<"; ";});
+    cout<<endl;
+
+
+
+    /*// 结束传输
     cout << "Transmission complete, " << success <<" success, " << failed << " filed.";
     iResult = send(ConnectSocket, "done", 4, 0);
     if (iResult == SOCKET_ERROR)
     {
-        cout << "\033[31m" << "send end message filed with error: %d\n" << WSAGetLastError() << "\033[0m";
+        cout << "send end message filed with error: " << WSAGetLastError() << endl;
         closesocket(ConnectSocket);
         WSACleanup();
         exit(1);
     }
     // 等待结束
-    iResult = recv(ConnectSocket, recv_buf, DEFAULT_BUFLEN, 0);
+    iResult = recv(ConnectSocket, recv_buf, DEFAULT_BUFLEN, 0);*/
+
+    cout << "Transmission complete, " << success <<" success, " << failed << " filed.";
 }
 
 /*
  * 接收文件主逻辑
  */
-void recv_files(const string & path)
+void recv_files(const fs::path & path)
 {
     auto ListenSocket = INVALID_SOCKET;
     auto ClientSocket = INVALID_SOCKET;
@@ -428,89 +425,128 @@ void recv_files(const string & path)
     closesocket(ListenSocket);
     cout << "Connection from " << ip << endl;
 
-    while (true)
+    vector<file_info> files;
+    iResult = recv(ClientSocket, recv_buf, DEFAULT_BUFLEN, 0);
+    if (iResult <= 0)
     {
-        iResult = recv(ClientSocket, recv_buf, DEFAULT_BUFLEN, 0);
-        if (iResult <= 0)
-        {
-            cout << "\033[31m" << "linkage interrupt with error: " << WSAGetLastError() << "\033[0m\n";
-            break;
-        }
-        if (strcmp(recv_buf, "done") == 0)
-        {
-            break;
-        }
+        cout << "\033[31m" << "linkage interrupt with error: " << WSAGetLastError() << "\033[0m\n";
+        exit(1);
+    }
 
-        // 解析文件信息
-        // 内容     f/d          filename&filesize"
-        //     f:文件 d:文件夹       文件(夹)名&文件总大小
-        file_data = recv_buf;
-        size_t len = file_data.find('&');
-        name = file_data.substr(1, len-1);
-        file_len = ston(file_data.substr(len + 1, file_data.length()));
-        // 接收文件
-        if (file_data[0] == 'f')
-        {
-            // 验证回答
-            std::cout << "Do you want to accept the file " << name << " Size : " << file_len << " bytes ?(y/n):";
-            while (true)
-            {
-                std::string answer;
-                std::cin >> answer;
-                if (answer[0] == 'y')
-                {
-                    iResult = send(ClientSocket, "yes", 3, 0);
-                    if (iResult == SOCKET_ERROR)
-                    {
-                        std::cout << "\033[31m" << "send confirmation message failed with error: %d\n"
-                                  << WSAGetLastError()
-                                  << "\033[0m";
-                        closesocket(ClientSocket);
-                        WSACleanup();
-                        break;
-                    }
+    files = split_data(recv_buf,iResult);
+    confirmation_acceptance(files);
+
+    string data;
+    for(const auto &file:files)
+    {
+        data += std::format("{}\x01f{}{}\x01c",file.name, file.len, (int)file.is_folder);
+    }
+    data = data.empty()?"None":data;
+
+    // 发送文件信息
+    iResult = send(ClientSocket, data.c_str(), (int)data.length(), 0);
+    if (iResult == SOCKET_ERROR)
+    {
+        cerr << "send filed with error: " << WSAGetLastError() << endl;
+        closesocket(ClientSocket);
+        WSACleanup();
+        exit(1);
+    }
+
+    for(const auto &f:files)
+    {
+        if(!f.is_folder)
+
+
+    }
+
+    iResult = recv(ClientSocket, recv_buf, DEFAULT_BUFLEN, 0);
+
+    for (auto const &r : files)
+    {
+        std::cout<<r.name<<"|"<<r.len<<"|"<<r.is_folder<<std::endl;
+    }
+}
+
+void confirmation_acceptance(vector<file_info> & files)
+{
+    cout<<"Do you want to recv these files?\n";
+    for (int i = 0; i < files.size(); ++i)
+    {
+        cout<<i<<") "<<files[i].name <<convert_unit(files[i].len)<<(files[i].is_folder?"folder":"file")<<endl;
+    }
+    cout<<"Input yes(y)/no(n)/Enter(=yes) or choice(c) to choice one by one: ";
+    string answer;
+    cin>>answer;
+    switch (answer[0])
+    {
+        case 'n':
+        case 'N': files.clear();
                     break;
-                } else if (answer[0] == 'n')
+        case 'y':
+        case 'Y':
+            break;
+        case 'c':
+            vector<file_info> f;
+            int a;
+            cout<<"input the number before the file you want to recv('q' to quit)";
+            while(true)
+            {
+                cout<<": ";
+                cin>>answer;
+                if (answer[0] == 'q') break;
+                try
                 {
-                    send(ClientSocket, "no", 2, 0);
-                    closesocket(ClientSocket);
-                    WSACleanup();
-                    exit(1);
-                } else
+                    a = std::stoi(answer);
+                } catch (std::exception &e)
                 {
-                    std::cout << "Input yes(y) or no(n)\n";
+                    cerr << "invalid input\n";
+                    answer.clear();
+                    continue;
                 }
+                if (a < 0 || a >= files.size() || std::find(f.begin(), f.end(), files[a]) != f.end())
+                {
+                    cerr << "invalid input\n";
+                    answer.clear();
+                    continue;
+                }
+                f.push_back(files[a]);
             }
+            files=f;
+            break;
+    }
+}
 
-            // 接收文件
-            fstream file;
-            file.open(path+"\\"+name, std::ios::out | std::ios::binary);
-            if (!file.is_open())
-            {
-                std::cout << "文件打开失败\n";
-                break;
-            }
-            //完成
-            if (!recv_single_file(ClientSocket,file))
-            {
-                cout<<"error"<<endl;
-                failed += 1;
-                break;
-            }else{
-                success += 1;
-            }
-          // TODO:接收文件夹
-        } else if (file_data[0] == 'd')
-        {
+/*
+ * 切分包含文件数据的字符串
+ */
+vector<file_info> split_data(const char * data,int len)
+{
+    vector<file_info> result;
+    file_info f;
 
-        } else
+    if(strcmp(data,"None") == 0)
+    {
+        return result;
+    }
+
+    int j=0;
+    for (int i = 0; i < len; ++i)
+    {
+        if(data[i]=='\x01f')
         {
-            std::cout << "\033[31m" << "Unparsed messages from the connection. error: %d\n" << WSAGetLastError()
-                      << "\033[0m";
+            f.name=string(data,j,i-j);
+            j=i;
+        }else if(data[i]=='\x01c')
+        {
+            f.len=std::stoull(string(data,j+1,i-j-2));
+            f.is_folder=(bool)std::stoi(string(data,i-1,1));
+            j=i+1;
+            result.push_back(f);
         }
     }
-    cout << "Transmission complete, " << success <<" success, " << failed << " filed.";
 
+    return result;
 }
 
 //生成进度条
