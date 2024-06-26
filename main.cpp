@@ -56,13 +56,13 @@ void show_progress();
 
 void confirmation_acceptance(vector<file_info> & files);
 
-bool send_single_file(SOCKET ConnectSocket, fstream & file);
+bool send_file(SOCKET ConnectSocket, fstream &file);
 
-bool recv_single_file(SOCKET ClientSocket,  fstream & file);
+bool recv_file(SOCKET ClientSocket, fstream &file);
 
-void send_files(const string & ip, const std::vector<string> & paths);
+void nft_send(const string & ip, const std::vector<string> & paths);
 
-void recv_files(const fs::path & path);
+void nft_recv(const fs::path & path);
 
 vector<file_info> split_data(const char * data, int len);
 
@@ -138,11 +138,11 @@ int main(int argc, char **argv)
                 //转换为绝对路径
                 std::for_each(paths.begin(), paths.end() ,
                               [](auto& dir_entry){dir_entry=fs::absolute(dir_entry).string();});
-                send_files(ip, paths);
+                nft_send(ip, paths);
                 break;
             case mode::recv:
                 path = (path.empty() ? "." : path);
-                recv_files(path);
+                nft_recv(path);
                 break;
             case mode::help:
                 std::cout << make_man_page(send_mode | recv_mode | help_mode);
@@ -236,7 +236,7 @@ void init_recv(SOCKET *ClientSocket)
 /*
  * 发送单个文件
  */
-bool send_single_file(SOCKET ConnectSocket,  fstream & file)
+bool send_file(SOCKET ConnectSocket, fstream & file)
 {
     int iResult;
 
@@ -270,7 +270,7 @@ bool send_single_file(SOCKET ConnectSocket,  fstream & file)
 /*
  * 接收单个文件
  */
-bool recv_single_file(SOCKET ClientSocket, fstream & file)
+bool recv_file(SOCKET ClientSocket, fstream &file)
 {
     int iResult;
 
@@ -317,7 +317,7 @@ bool recv_single_file(SOCKET ClientSocket, fstream & file)
 /*
  * 发送文件主逻辑
  */
-void send_files(const std::string & ip, const std::vector<std::string> & paths)
+void nft_send(const std::string & ip, const std::vector<std::string> & paths)
 {
     auto ConnectSocket = INVALID_SOCKET;
     int iResult;
@@ -331,7 +331,7 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
 
     for(const auto &path:paths)
     {
-        fs::path p(path);
+        fs::path p{path};
         data += std::format("{}\x01f{}{}\x01c",p.filename().string(),
                          fs::is_directory(p) ? folder_size(p) : fs::file_size(p),
                             (int)fs::is_directory(p));
@@ -367,8 +367,19 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
 
     cout<<"be ready to send: ";
     std::for_each(files.begin(), files.end(), [](const auto&f){cout<<f.name<<"; ";});
-    cout<<endl;
+    cout<<endl<<"send begin"<<endl;
 
+    for(const auto &path:paths)
+    {
+        fs::path p{path};
+
+        data += std::format("{}\x01f{}{}\x01c", p.string(), 0,fs::is_directory(p));
+
+        if (is_directory(p))
+            for (const auto& pathses: fs::recursive_directory_iterator(p))
+                data += std::format("{}\x01f{}{}\x01c", pathses.path().string(), 0,
+                                    is_directory(pathses));
+    }
 
 
     /*// 结束传输
@@ -390,7 +401,7 @@ void send_files(const std::string & ip, const std::vector<std::string> & paths)
 /*
  * 接收文件主逻辑
  */
-void recv_files(const fs::path & path)
+void nft_recv(const fs::path & path)
 {
     auto ListenSocket = INVALID_SOCKET;
     auto ClientSocket = INVALID_SOCKET;
@@ -453,12 +464,7 @@ void recv_files(const fs::path & path)
         exit(1);
     }
 
-    for(const auto &f:files)
-    {
-        if(!f.is_folder)
 
-
-    }
 
     iResult = recv(ClientSocket, recv_buf, DEFAULT_BUFLEN, 0);
 
@@ -569,7 +575,7 @@ void show_progress()
         speed               = (double)(have_done_len-last_have_done_len)/((double)(time_now-time_last)/CLOCKS_PER_SEC);  //单位是字节\秒
         if(speed == 0)
         {
-            speed = 10000; // 莫名奇妙的错bug，有概率speed会是0
+            speed = 10000;
         }
         last_have_done_len  = have_done_len;
         time_last           = time_now;
